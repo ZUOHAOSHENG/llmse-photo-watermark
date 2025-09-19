@@ -20,7 +20,7 @@ pip install -r requirements.txt
 2) 运行
 
 ```
-python watermark_cli.py <路径> [--font-size 36] [--color "#FFFFFF"] [--position bottom-right] [--font-path <ttf路径>]
+python watermark_cli.py <路径> [--font-size 80] [--color "#FFFFFF"] [--position bottom-right] [--font-path <ttf路径>]
 ```
 
 ## 参数说明

@@ -1,9 +1,10 @@
 import argparse
 import os
 from pathlib import Path
-from typing import Optional, Tuple, Iterable
+from typing import Optional, Tuple, Iterable, Union
 
 from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageOps
+import platform
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 EXIF_TAG_DATETIME_ORIGINAL = 36867  # DateTimeOriginal
@@ -14,8 +15,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="读取图片 EXIF 拍摄日期(年月日)作为水印绘制到图片上，输出到原目录名_watermark 子目录。"
     )
-    parser.add_argument("path", help="图片文件或目录路径")
-    parser.add_argument("--font-size", type=int, default=36, dest="font_size", help="字体大小(像素)，默认 36")
+    # 允许不提供路径，进入交互模式
+    parser.add_argument("path", nargs="?", default=None, help="图片文件或目录路径(可省略以进入交互模式)")
+    parser.add_argument("--font-size", type=int, default=80, dest="font_size", help="字体大小(像素)，默认 80")
     parser.add_argument(
         "--color",
         type=str,
@@ -86,19 +88,64 @@ def exif_date_text(img: Image.Image) -> Optional[str]:
         return None
 
 
-def load_font(font_path: Optional[str], size: int) -> ImageFont.ImageFont:
+def _candidate_font_paths() -> Iterable[Path]:
+    """Return a set of common system font paths to try for TrueType fonts.
+    Covers Windows/macOS/Linux. Ordered by likelihood.
+    """
+    system = platform.system().lower()
+    candidates: list[Path] = []
+    if system.startswith("win"):
+        win_fonts = Path("C:/Windows/Fonts")
+        names = [
+            "msyh.ttc",  # 微软雅黑
+            "msyhl.ttc",
+            "simhei.ttf",  # 黑体
+            "simsun.ttc",  # 宋体
+            "arial.ttf",
+            "segoeui.ttf",
+            "calibri.ttf",
+        ]
+        candidates.extend([win_fonts / n for n in names])
+    elif system == "darwin":  # macOS
+        candidates.extend([
+            Path("/Library/Fonts/Arial.ttf"),
+            Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+            Path("/System/Library/Fonts/PingFang.ttc"),
+            Path("/System/Library/Fonts/Helvetica.ttc"),
+            Path("/Library/Fonts/Songti.ttc"),
+        ])
+    else:  # Linux and others
+        candidates.extend([
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        ])
+    # Also try a plain DejaVuSans in current working dir or system path
+    candidates.append(Path("DejaVuSans.ttf"))
+    return [p for p in candidates if p.exists()]
+
+
+def load_font(font_path: Optional[str], size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     # 1) user provided
     if font_path:
         try:
             return ImageFont.truetype(font_path, size=size)
         except Exception:
             print(f"[警告] 无法加载字体: {font_path}，将尝试使用内置字体。")
-    # 2) try Pillow's DejaVuSans
+    # 2) try system common fonts
+    for p in _candidate_font_paths():
+        try:
+            return ImageFont.truetype(str(p), size=size)
+        except Exception:
+            continue
+    # 3) try Pillow's DejaVuSans by name resolution
     try:
         return ImageFont.truetype("DejaVuSans.ttf", size=size)
     except Exception:
         pass
-    # 3) fallback default
+    # 4) fallback default (fixed-size bitmap)
+    print("[警告] 未找到可用的 TrueType 字体，已回退到内置位图字体，--font-size 将不会生效。"
+          " 请使用 --font-path 指定字体，例如 C:/Windows/Fonts/msyh.ttc 或 /usr/share/fonts/.../DejaVuSans.ttf")
     return ImageFont.load_default()
 
 
@@ -149,7 +196,7 @@ def calc_position(img_w: int, img_h: int, text_w: int, text_h: int, pos: str, ma
     return max(img_w - text_w - margin, margin), max(img_h - text_h - margin, margin)
 
 
-def draw_watermark(img: Image.Image, text: str, font: ImageFont.ImageFont, color_rgba: Tuple[int, int, int, int], position: str) -> Image.Image:
+def draw_watermark(img: Image.Image, text: str, font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont], color_rgba: Tuple[int, int, int, int], position: str) -> Image.Image:
     # Ensure correct orientation
     img = ImageOps.exif_transpose(img)
 
@@ -184,7 +231,7 @@ def draw_watermark(img: Image.Image, text: str, font: ImageFont.ImageFont, color
     return out
 
 
-def process_file(in_file: Path, out_root: Path, source_root: Path, font: ImageFont.ImageFont, color_rgba: Tuple[int, int, int, int], position: str) -> None:
+def process_file(in_file: Path, out_root: Path, source_root: Path, font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont], color_rgba: Tuple[int, int, int, int], position: str) -> None:
     try:
         with Image.open(in_file) as im:
             text = exif_date_text(im)
@@ -224,7 +271,37 @@ def process_file(in_file: Path, out_root: Path, source_root: Path, font: ImageFo
 
 def main():
     args = parse_args()
-    input_path = Path(args.path)
+
+    # 交互模式：未提供 path 时提示输入，并可选择修改其余参数
+    if args.path is None:
+        print("[交互] 未提供路径，进入交互模式。直接回车采用默认值。")
+        path_input = input("请输入图片文件或目录路径: ").strip()
+        if not path_input:
+            print("[错误] 未输入路径，已退出。")
+            return
+        input_path = Path(path_input)
+
+        # 其他参数交互输入(可回车跳过)
+        try:
+            fs_in = input(f"字体大小(默认 {args.font_size}): ").strip()
+            if fs_in:
+                args.font_size = int(fs_in)
+        except Exception:
+            print("[提示] 字体大小输入无效，使用默认值。")
+        color_in = input(f"颜色(默认 {args.color}): ").strip()
+        if color_in:
+            args.color = color_in
+        pos_in = input(f"位置[top-left/top-right/center/bottom-left/bottom-right] (默认 {args.position}): ").strip()
+        if pos_in in {"top-left","top-right","center","bottom-left","bottom-right"}:
+            args.position = pos_in
+        elif pos_in:
+            print("[提示] 位置输入无效，使用默认值。")
+        font_in = input("字体文件路径(可选，默认空): ").strip()
+        if font_in:
+            args.font_path = font_in
+    else:
+        input_path = Path(args.path)
+
     if not input_path.exists():
         print(f"[错误] 路径不存在: {input_path}")
         return
