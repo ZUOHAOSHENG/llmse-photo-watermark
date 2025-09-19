@@ -28,7 +28,7 @@ python watermark_cli.py <路径> [--font-size 80] [--color "#FFFFFF"] [--positio
 - `<路径>`：
   - 传入单个图片文件路径：仅处理该文件；
   - 传入目录路径：递归处理其中常见图片( jpg/jpeg/png/tif/tiff )。
-- `--font-size`：字体大小(像素)。默认 36。
+- `--font-size`：字体大小(像素)。默认 80。
 - `--color`：
   - HEX，如“#FFFFFF”“#80FF0000”(支持含 alpha 的 #AARRGGBB 及 #RRGGBBAA)；
   - 或常见颜色名(white, red, black等)。
